@@ -392,6 +392,10 @@ def test_api():
             'message': 'API request failed',
             'error': str(e)
         }), 500
+    
+@app.route("/")
+def home():
+    return "Rainfall Prediction API is running!"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
