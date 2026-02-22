@@ -123,183 +123,92 @@ except Exception as e:
 @app.route('/predict', methods=['POST'])
 def predict_rainfall():
     try:
-        # Get location and months from request
         data = request.get_json()
-        logger.info(f"Received request data: {data}")
+
         location = data.get('location')
         months = data.get('months', 3)
-        
-        logger.info(f"Processing request for location: {location}, months: {months}")
-        
+
         if not location:
-            logger.error("Location parameter missing")
             return jsonify({'error': 'Location is required'}), 400
-        
-        # Validate months input
+
         if months not in [3, 5]:
-            logger.error(f"Invalid months parameter: {months}")
-            return jsonify({'error': 'Invalid months parameter. Must be either 3 or 5 months'}), 400
-        
-        try:
-            # Get coordinates
-            location_data = get_coordinates(location)
-            logger.info(f"Location found: {location_data['name']}, {location_data['country']}")
-            
-            # Get weather data
-            weather_params = {
-                'lat': location_data['latitude'],
-                'lon': location_data['longitude'],
-                'appid': OPENWEATHER_API_KEY,
-                'units': 'metric',
-                'cnt': 40  # Get maximum available forecast days
-            }
-            
-            logger.info(f"Fetching weather data for coordinates: {location_data['latitude']}, {location_data['longitude']}")
-            response = requests.get(BASE_WEATHER_URL, params=weather_params, verify=True)
-            response.raise_for_status()
-            weather_data = response.json()
-            
-            if 'list' not in weather_data or not weather_data['list']:
-                logger.error("No weather data available in API response")
-                raise ValueError("No weather data available for this location")
-                
-            logger.info(f"Successfully retrieved weather data with {len(weather_data['list'])} entries")
-            
-            # Process data and make predictions
-            try:
-                processed_data, actual_weather = process_weather_data(weather_data, scaler)
-                logger.info(f"Successfully processed weather data. Model input shape: {processed_data.shape}")
-            except Exception as e:
-                logger.error(f"Error processing weather data: {str(e)}")
-                logger.error(traceback.format_exc())
-                raise ValueError(f"Error processing weather data: {str(e)}")
+            return jsonify({'error': 'Invalid months parameter'}), 400
 
-            # Make predictions for multiple months
-            predictions = []
-            start_date = datetime.now().replace(day=1)  # Start from first day of current month
-            
-            # Initialize the sequence with first processed data
-            current_sequence = processed_data.copy()
-            
-            for month in range(months):
-                try:
-                    current_date = start_date + relativedelta(months=month)
-                    logger.info(f"Making prediction for month: {current_date.strftime('%B %Y')}")
-                    
-                    # Make prediction for current month
-                    month_pred = model.predict(current_sequence)
-                    logger.info(f"Raw model output for {current_date.strftime('%B %Y')}: {month_pred[0][0]}")
-                    
-                    # Get the raw prediction from the model using the scaler
-                    rainfall_mean = scaler.mean_[RAINFALL_FEATURE_INDEX]
-                    rainfall_scale = scaler.scale_[RAINFALL_FEATURE_INDEX]
-                    rainfall_pred = float(month_pred[0][0] * rainfall_scale + rainfall_mean)
-                    logger.info(f"Unscaled prediction: {rainfall_pred}")
-                    
-                    # Only validate to ensure non-negative values
-                    rainfall_pred = validate_prediction(
-                        rainfall_pred, 
-                        current_date.month,
-                        location_data,
-                        actual_weather['current_conditions']
-                    )
-                    
-                    # Round to 2 decimal places
-                    rainfall_pred = round(rainfall_pred, 2)
-                    
-                    logger.info(f"Final prediction for {current_date.strftime('%B %Y')}: {rainfall_pred}mm")
-                    
-                    # Calculate prediction date
-                    pred_date = current_date.strftime('%Y-%m-%d')
-                    
-                    # Add prediction with confidence based on time distance
-                    confidence = 'high' if month < 2 else ('medium' if month < 4 else 'low')
-                    predictions.append({
-                        'date': pred_date,
-                        'rainfall_mm': rainfall_pred,
-                        'confidence': confidence,
-                        'month': current_date.strftime('%B %Y')
-                    })
-                    
-                    # Update sequence for next prediction
-                    current_sequence = current_sequence.copy()
-                    current_sequence[0, :-1, :] = current_sequence[0, 1:, :]  # Shift data back
-                    
-                    # Create new feature vector for the prediction
-                    new_feature = np.zeros((1, 1, 6))  # Updated for 6 features
-                    new_feature[0, 0, RAINFALL_FEATURE_INDEX] = month_pred[0][0]  # Add predicted rainfall
-                    
-                    # Update other features based on actual weather data
-                    if 'list' in weather_data and len(weather_data['list']) > 0:
-                        latest_weather = weather_data['list'][-1]
-                        new_feature[0, 0, 0] = latest_weather['main']['temp']  # Temperature
-                        new_feature[0, 0, 1] = latest_weather['main']['humidity']  # Humidity
-                        new_feature[0, 0, 2] = latest_weather['main']['pressure']  # Pressure
-                        new_feature[0, 0, 3] = latest_weather['wind']['speed']  # Wind speed
-                        new_feature[0, 0, 4] = latest_weather['clouds']['all']  # Clouds
-                    
-                    # Add new feature vector to sequence
-                    current_sequence[0, -1:, :] = new_feature
-                    
-                except Exception as e:
-                    logger.error(f"Error making prediction for month {month}: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    raise ValueError(f"Error making prediction for month {month}: {str(e)}")
+        # STEP 1: Coordinates
+        location_data = get_coordinates(location)
 
-            # Format data for visualization using actual weather data
-            try:
-                visualization_data = format_monthly_forecast(
-                    predictions, 
-                    start_date,
-                    actual_weather
-                )
-                logger.info("Successfully formatted forecast data for visualization")
-            except Exception as e:
-                logger.error(f"Error formatting forecast data: {str(e)}")
-                logger.error(traceback.format_exc())
-                raise ValueError(f"Error formatting forecast data: {str(e)}")
+        # STEP 2: Weather data
+        weather_params = {
+            'lat': location_data['latitude'],
+            'lon': location_data['longitude'],
+            'appid': OPENWEATHER_API_KEY,
+            'units': 'metric',
+            'cnt': 40
+        }
 
-            # Get crop recommendations
-            try:
-                crop_recommendations = get_crop_recommendations(
-                    rainfall_data=visualization_data['rainfall'],
-                    temperature_data=visualization_data['max_temp']
-                )
-                logger.info("Successfully generated crop recommendations")
-            except Exception as e:
-                logger.error(f"Error generating crop recommendations: {str(e)}")
-                logger.error(traceback.format_exc())
-                raise ValueError(f"Error generating crop recommendations: {str(e)}")
+        weather_raw = requests.get(BASE_WEATHER_URL, params=weather_params).json()
 
-            return jsonify({
-                'status': 'success',
-                'predictions': predictions,
-                'visualization_data': visualization_data,
-                'crop_recommendations': crop_recommendations,
-                'location': {
-                    'name': location_data['name'],
-                    'country': location_data['country'],
-                    'coordinates': {
-                        'latitude': location_data['latitude'],
-                        'longitude': location_data['longitude']
-                    }
-                },
-                'forecast_period': f"{months} months"
+        # STEP 3: Preprocess once
+        processed_data, actual_weather = process_weather_data(weather_raw, scaler)
+
+        # Reuse this array and avoid creating new ones
+        current_sequence = processed_data.copy()
+
+        predictions = []
+        start_date = datetime.now().replace(day=1)
+
+        for month in range(months):
+
+            # MODEL PREDICTION — FAST because model is preloaded
+            pred_scaled = model.predict(current_sequence, verbose=0)[0][0]
+
+            # Unscale rainfall
+            rainfall_mean = scaler.mean_[RAINFALL_FEATURE_INDEX]
+            rainfall_scale = scaler.scale_[RAINFALL_FEATURE_INDEX]
+            rainfall_pred = float(pred_scaled * rainfall_scale + rainfall_mean)
+
+            # Cleanup negative / impossible values
+            rainfall_pred = validate_prediction(
+                rainfall_pred,
+                (start_date.month + month - 1) % 12 + 1,
+                location_data,
+                actual_weather['current_conditions']
+            )
+
+            predictions.append({
+                "month": (start_date + relativedelta(months=month)).strftime("%B %Y"),
+                "date": (start_date + relativedelta(months=month)).strftime("%Y-%m-%d"),
+                "rainfall_mm": round(rainfall_pred, 2),
+                "confidence": "high" if month == 0 else "medium" if month == 1 else "low"
             })
-            
-        except ValueError as e:
-            logger.error(f"ValueError in prediction process: {str(e)}")
-            return jsonify({'error': str(e)}), 400
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Weather API error: {str(e)}")
-            return jsonify({'error': 'Failed to fetch weather data'}), 503
-        
+
+            # SHIFT the sequence (avoid heavy recomputation)
+            current_sequence[:, :-1, :] = current_sequence[:, 1:, :]
+            current_sequence[:, -1, :] = current_sequence[:, -2, :]
+
+        # Visualization
+        visualization_data = format_monthly_forecast(predictions, start_date, actual_weather)
+
+        # Crop AI
+        crop_recommendations = get_crop_recommendations(
+            rainfall_data=visualization_data['rainfall'],
+            temperature_data=visualization_data['max_temp']
+        )
+
+        return jsonify({
+            "status": "success",
+            "predictions": predictions,
+            "visualization_data": visualization_data,
+            "crop_recommendations": crop_recommendations,
+            "location": location_data,
+            "forecast_period": f"{months} months"
+        })
+
     except Exception as e:
-        logger.error(f"Unexpected error in predict_rainfall: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
-
+    
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
