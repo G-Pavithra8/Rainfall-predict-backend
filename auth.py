@@ -6,10 +6,11 @@ import os
 auth_bp = Blueprint('auth', __name__)
 
 # MongoDB setup (move this to app.py if you want a single client)
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+MONGO_URI = os.getenv('MONGO_URI')
 client = MongoClient(MONGO_URI)
-db = client['auth_db']
+db = client["auth_db"]
 users_collection = db['users']
+
 
 @auth_bp.route('/signup', methods=['POST'])
 def signup():
